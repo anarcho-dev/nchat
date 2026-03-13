@@ -345,6 +345,18 @@ button:disabled {
   font-size: 0.76rem;
 }
 
+.plugin-rail-btn.active {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--brand) 58%, var(--border));
+  background: color-mix(in srgb, var(--brand) 16%, var(--surface-elev));
+  color: var(--text);
+}
+
+.plugin-rail-btn:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
 .plugin-rail-btn span {
   width: 22px;
   height: 22px;
@@ -420,6 +432,120 @@ button:disabled {
   gap: 0.55rem;
   align-content: start;
   min-height: 0;
+}
+
+.files-panel {
+  overflow: auto;
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+  min-height: 0;
+}
+
+.files-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.files-config-btn {
+  padding: 0.38rem 0.62rem;
+  border-radius: 10px;
+  font-size: 0.76rem;
+}
+
+.files-config {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 64%, var(--surface-elev));
+  padding: 0.5rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.files-config label {
+  display: grid;
+  gap: 0.22rem;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.files-config input,
+.files-config select {
+  width: 100%;
+  padding: 0.42rem 0.46rem;
+  border-radius: 9px;
+}
+
+.files-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.38rem;
+}
+
+.files-config-grid label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  font-size: 0.76rem;
+  color: var(--text);
+}
+
+.files-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.files-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 58%, var(--surface-elev));
+  padding: 0.56rem;
+  display: grid;
+  gap: 0.32rem;
+}
+
+.files-item-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+  align-items: center;
+}
+
+.files-item-meta strong {
+  font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.files-item-meta span {
+  font-size: 0.7rem;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.08rem 0.38rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.files-item-thread,
+.files-item-caption {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-soft);
+}
+
+.files-item-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.files-item-actions .theme-btn {
+  padding: 0.38rem 0.55rem;
+  border-radius: 9px;
+  font-size: 0.76rem;
 }
 
 .thread-list {
@@ -988,6 +1114,10 @@ button:disabled {
   .group-admin-settings {
     padding: 0.45rem;
     gap: 0.45rem;
+  }
+
+  .files-config-grid {
+    grid-template-columns: 1fr;
   }
 
   .chip {

@@ -72,10 +72,36 @@ interface ConversationThread {
   lastAt: string;
 }
 
+interface SharedFileItem {
+  messageId: number;
+  sender: string;
+  senderClientId: string;
+  createdAt: string;
+  audience: ChatAudience;
+  partnerIds: string[];
+  threadKey: string;
+  threadTitle: string;
+  direction: "sent" | "received";
+  file: PendingFile;
+  caption: string;
+}
+
+interface FileLibraryConfig {
+  scope: "all" | "current";
+  includeSent: boolean;
+  includeReceived: boolean;
+  includePublic: boolean;
+  includePrivate: boolean;
+  includeGroup: boolean;
+  sortBy: "newest" | "oldest" | "size-desc" | "size-asc";
+  limit: number;
+}
+
 type ThemeMode = "dark" | "light";
 type CryptoMode = "secure" | "insecure";
 type ChatAudience = "public" | "private" | "group";
 type CryptoEngine = "WebCrypto" | "Forge" | "Fallback";
+type SidebarSection = "contacts" | "files";
 
 const sidebarPlugins = [
   { id: "files", label: "Files", short: "FI" },
@@ -84,7 +110,18 @@ const sidebarPlugins = [
 ];
 
 const SESSION_CLIENT_ID_KEY = "nchat.clientId";
+const FILES_CONFIG_KEY = "nchat.files.config";
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const defaultFileLibraryConfig: FileLibraryConfig = {
+  scope: "all",
+  includeSent: true,
+  includeReceived: true,
+  includePublic: true,
+  includePrivate: true,
+  includeGroup: true,
+  sortBy: "newest",
+  limit: 120
+};
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -241,6 +278,7 @@ export default function App() {
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
   const [users, setUsers] = useState<ChatUser[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeSidebarSection, setActiveSidebarSection] = useState<SidebarSection>("contacts");
   const [isMobileLayout, setIsMobileLayout] = useState(false);
   const [partnerFilter, setPartnerFilter] = useState("");
   const [isPartnerSearchFocused, setIsPartnerSearchFocused] = useState(false);
@@ -251,6 +289,19 @@ export default function App() {
   const [isBroadcastAdminLoading, setIsBroadcastAdminLoading] = useState(false);
   const [showBroadcastAdminSettings, setShowBroadcastAdminSettings] = useState(false);
   const [showGroupAdminSettings, setShowGroupAdminSettings] = useState(false);
+  const [showFilesConfig, setShowFilesConfig] = useState(false);
+  const [filesConfig, setFilesConfig] = useState<FileLibraryConfig>(() => {
+    const raw = localStorage.getItem(FILES_CONFIG_KEY);
+    if (!raw) {
+      return defaultFileLibraryConfig;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<FileLibraryConfig>;
+      return { ...defaultFileLibraryConfig, ...parsed };
+    } catch {
+      return defaultFileLibraryConfig;
+    }
+  });
   const [error, setError] = useState<string | null>(null);
   const [storedClientId, setStoredClientId] = useState<string>(() => localStorage.getItem(SESSION_CLIENT_ID_KEY) ?? "");
 
@@ -283,6 +334,10 @@ export default function App() {
       document.body.style.overflow = "";
     };
   }, [isMobileLayout, sidebarCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem(FILES_CONFIG_KEY, JSON.stringify(filesConfig));
+  }, [filesConfig]);
 
   useEffect(() => {
     const applyLayout = () => {
@@ -683,6 +738,98 @@ export default function App() {
     return list;
   }, [messages, clientId, userById, selectedThreadKey, chatAudience, selectedPartnerIds]);
 
+  const sharedFiles = useMemo(() => {
+    const items: SharedFileItem[] = [];
+
+    for (const msg of messages) {
+      if (msg.content.kind !== "file") {
+        continue;
+      }
+
+      const direction: "sent" | "received" = msg.senderClientId === clientId ? "sent" : "received";
+      let partnerIds: string[] = [];
+      let threadTitle = "Broadcast";
+      let key = "public";
+
+      if (msg.chatType === "private") {
+        const partnerId = msg.senderClientId === clientId ? msg.recipientClientIds[0] : msg.senderClientId;
+        if (!partnerId) {
+          continue;
+        }
+        partnerIds = [partnerId];
+        key = threadKey("private", partnerIds);
+        threadTitle = userById.get(partnerId)?.nickname ?? `Private ${partnerId.slice(0, 8)}`;
+      }
+
+      if (msg.chatType === "group") {
+        const groupMembers = new Set<string>(msg.recipientClientIds.filter((id) => id !== clientId));
+        if (msg.senderClientId && msg.senderClientId !== clientId) {
+          groupMembers.add(msg.senderClientId);
+        }
+        partnerIds = [...groupMembers].sort();
+        if (partnerIds.length === 0) {
+          continue;
+        }
+        key = threadKey("group", partnerIds);
+        threadTitle = `Group: ${partnerIds.map((id) => userById.get(id)?.nickname ?? id.slice(0, 6)).join(", ")}`;
+      }
+
+      items.push({
+        messageId: msg.id,
+        sender: msg.sender,
+        senderClientId: msg.senderClientId,
+        createdAt: msg.createdAt,
+        audience: msg.chatType,
+        partnerIds,
+        threadKey: key,
+        threadTitle,
+        direction,
+        file: msg.content.file,
+        caption: msg.content.caption
+      });
+    }
+
+    const filtered = items.filter((item) => {
+      if (filesConfig.scope === "current" && item.threadKey !== selectedThreadKey) {
+        return false;
+      }
+      if (item.audience === "public" && !filesConfig.includePublic) {
+        return false;
+      }
+      if (item.audience === "private" && !filesConfig.includePrivate) {
+        return false;
+      }
+      if (item.audience === "group" && !filesConfig.includeGroup) {
+        return false;
+      }
+      if (item.direction === "sent" && !filesConfig.includeSent) {
+        return false;
+      }
+      if (item.direction === "received" && !filesConfig.includeReceived) {
+        return false;
+      }
+      return true;
+    });
+
+    filtered.sort((a, b) => {
+      if (filesConfig.sortBy === "oldest") {
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      }
+      if (filesConfig.sortBy === "size-desc") {
+        return b.file.size - a.file.size;
+      }
+      if (filesConfig.sortBy === "size-asc") {
+        return a.file.size - b.file.size;
+      }
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+
+    return filtered.slice(0, Math.max(1, filesConfig.limit));
+  }, [messages, clientId, userById, filesConfig, selectedThreadKey]);
+
+  const sidebarCount = activeSidebarSection === "files" ? sharedFiles.length : visibleUsers.length;
+  const sidebarTitle = activeSidebarSection === "files" ? "Shared Files" : "Active Contacts";
+
   const groupAdminTargets = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const thread of conversationThreads) {
@@ -860,6 +1007,15 @@ export default function App() {
     setPendingFile(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
+    }
+  }
+
+  function openFileThread(item: SharedFileItem) {
+    setChatAudience(item.audience);
+    setSelectedPartnerIds(item.partnerIds);
+    setActiveSidebarSection("contacts");
+    if (isMobileLayout) {
+      setSidebarCollapsed(true);
     }
   }
 
@@ -1108,6 +1264,8 @@ export default function App() {
     setDraft("");
     setPendingFile(null);
     setPartnerFilter("");
+    setActiveSidebarSection("contacts");
+    setShowFilesConfig(false);
     setChatAudience("public");
     setSelectedPartnerIds([]);
     setStoredClientId("");
@@ -1185,8 +1343,8 @@ export default function App() {
         <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
           <div className="sidebar-head">
             <div className="sidebar-title-row">
-              <h2>Active Contacts</h2>
-              <span className="count-badge">{visibleUsers.length}</span>
+              <h2>{sidebarTitle}</h2>
+              <span className="count-badge">{sidebarCount}</span>
             </div>
             <button
               type="button"
@@ -1201,10 +1359,13 @@ export default function App() {
           <div className={`sidebar-plugin-strip ${sidebarCollapsed && !isMobileLayout ? "rail" : "inline"}`}>
             <button
               type="button"
-              className="sidebar-rail-btn active"
+              className={`sidebar-rail-btn ${activeSidebarSection === "contacts" ? "active" : ""}`}
               title="Contacts"
               aria-label="Contacts"
-              onClick={() => setSidebarCollapsed(false)}
+              onClick={() => {
+                setActiveSidebarSection("contacts");
+                setSidebarCollapsed(false);
+              }}
             >
               {sidebarCollapsed && !isMobileLayout ? "CN" : "Contacts"}
             </button>
@@ -1212,9 +1373,16 @@ export default function App() {
               <button
                 key={plugin.id}
                 type="button"
-                className="plugin-rail-btn"
-                title={`${plugin.label} plugin (coming soon)`}
-                aria-label={`${plugin.label} plugin (coming soon)`}
+                className={`plugin-rail-btn ${plugin.id === "files" && activeSidebarSection === "files" ? "active" : ""}`}
+                title={plugin.id === "files" ? "Shared Files" : `${plugin.label} plugin (coming soon)`}
+                aria-label={plugin.id === "files" ? "Shared Files" : `${plugin.label} plugin (coming soon)`}
+                disabled={plugin.id !== "files"}
+                onClick={() => {
+                  if (plugin.id === "files") {
+                    setActiveSidebarSection("files");
+                    setSidebarCollapsed(false);
+                  }
+                }}
               >
                 <span>{plugin.short}</span>
                 {!sidebarCollapsed || isMobileLayout ? <em>{plugin.label}</em> : null}
@@ -1224,102 +1392,233 @@ export default function App() {
 
           {!sidebarCollapsed ? (
             <>
-              <div className="partner-search-wrap">
-                <input
-                  type="search"
-                  className="partner-search"
-                  value={partnerFilter}
-                  onChange={(event) => setPartnerFilter(event.target.value)}
-                  onFocus={() => setIsPartnerSearchFocused(true)}
-                  onBlur={() => {
-                    window.setTimeout(() => setIsPartnerSearchFocused(false), 120);
-                  }}
-                  placeholder="Search contacts"
-                  autoComplete="off"
-                />
-                {showContactSuggestions ? (
-                  <div className="partner-suggestions" role="listbox" aria-label="Contact suggestions">
-                    {contactSuggestions.map((user) => (
-                      <button
+              {activeSidebarSection === "contacts" ? (
+                <>
+                  <div className="partner-search-wrap">
+                    <input
+                      type="search"
+                      className="partner-search"
+                      value={partnerFilter}
+                      onChange={(event) => setPartnerFilter(event.target.value)}
+                      onFocus={() => setIsPartnerSearchFocused(true)}
+                      onBlur={() => {
+                        window.setTimeout(() => setIsPartnerSearchFocused(false), 120);
+                      }}
+                      placeholder="Search contacts"
+                      autoComplete="off"
+                    />
+                    {showContactSuggestions ? (
+                      <div className="partner-suggestions" role="listbox" aria-label="Contact suggestions">
+                        {contactSuggestions.map((user) => (
+                          <button
+                            key={user.clientId}
+                            type="button"
+                            className="partner-suggestion-btn"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              openPrivateContact(user.clientId);
+                            }}
+                          >
+                            <strong>{user.nickname}</strong>
+                            <span>ID {user.clientId.slice(0, 8)}...</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="partner-list">
+                    <p className="sidebar-section-title">Recent Chats</p>
+                    <div className="thread-list">
+                      {conversationThreads.map((thread) => {
+                        const threadGroupKey = thread.audience === "group" ? groupKeyForMembers(clientId, thread.partnerIds) : "";
+                        const threadAdminId = threadGroupKey ? groupAdminByKey[threadGroupKey] ?? "" : "";
+                        const isThreadAdminMe = !!threadAdminId && threadAdminId === clientId;
+                        const isBroadcastThread = thread.audience === "public";
+                        const isBroadcastAdminMe = !!broadcastAdminId && broadcastAdminId === clientId;
+
+                        return (
+                        <button
+                          key={thread.key}
+                          type="button"
+                          className={`thread-card ${thread.key === selectedThreadKey ? "active" : ""}`}
+                          onClick={() => {
+                            setChatAudience(thread.audience);
+                            setSelectedPartnerIds(thread.partnerIds);
+                          }}
+                        >
+                          <strong>
+                            {thread.title}
+                            {isBroadcastThread && broadcastAdminId ? (
+                              <span className={`admin-badge ${isBroadcastAdminMe ? "self" : ""}`}>{isBroadcastAdminMe ? "Admin" : "Managed"}</span>
+                            ) : null}
+                            {thread.audience === "group" && threadAdminId ? (
+                              <span className={`admin-badge ${isThreadAdminMe ? "self" : ""}`}>{isThreadAdminMe ? "Admin" : "Managed"}</span>
+                            ) : null}
+                          </strong>
+                          <span>{thread.subtitle}</span>
+                        </button>
+                        );
+                      })}
+                    </div>
+
+                    <p className="sidebar-section-title">Contacts</p>
+                    {visibleUsers.length === 0 ? <p className="muted">No active contacts</p> : null}
+                    {visibleUsers.map((user) => (
+                      <article
                         key={user.clientId}
-                        type="button"
-                        className="partner-suggestion-btn"
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          openPrivateContact(user.clientId);
+                        className={`partner-card ${selectedPartnerIds.includes(user.clientId) ? "selected" : ""}`}
+                        onClick={() => {
+                          if (chatAudience === "public") {
+                            setChatAudience("private");
+                            setSelectedPartnerIds([user.clientId]);
+                            return;
+                          }
+                          if (chatAudience === "private") {
+                            setSelectedPartnerIds([user.clientId]);
+                            return;
+                          }
+                          setSelectedPartnerIds((prev) =>
+                            prev.includes(user.clientId) ? prev.filter((id) => id !== user.clientId) : [...prev, user.clientId]
+                          );
                         }}
                       >
-                        <strong>{user.nickname}</strong>
+                        <div className="partner-row">
+                          <strong>{user.nickname}</strong>
+                          <span className="online-dot" aria-hidden="true" />
+                        </div>
                         <span>ID {user.clientId.slice(0, 8)}...</span>
-                      </button>
+                      </article>
                     ))}
                   </div>
-                ) : null}
-              </div>
-              <div className="partner-list">
-                <p className="sidebar-section-title">Recent Chats</p>
-                <div className="thread-list">
-                  {conversationThreads.map((thread) => {
-                    const threadGroupKey = thread.audience === "group" ? groupKeyForMembers(clientId, thread.partnerIds) : "";
-                    const threadAdminId = threadGroupKey ? groupAdminByKey[threadGroupKey] ?? "" : "";
-                    const isThreadAdminMe = !!threadAdminId && threadAdminId === clientId;
-                    const isBroadcastThread = thread.audience === "public";
-                    const isBroadcastAdminMe = !!broadcastAdminId && broadcastAdminId === clientId;
-
-                    return (
-                    <button
-                      key={thread.key}
-                      type="button"
-                      className={`thread-card ${thread.key === selectedThreadKey ? "active" : ""}`}
-                      onClick={() => {
-                        setChatAudience(thread.audience);
-                        setSelectedPartnerIds(thread.partnerIds);
-                      }}
-                    >
-                      <strong>
-                        {thread.title}
-                        {isBroadcastThread && broadcastAdminId ? (
-                          <span className={`admin-badge ${isBroadcastAdminMe ? "self" : ""}`}>{isBroadcastAdminMe ? "Admin" : "Managed"}</span>
-                        ) : null}
-                        {thread.audience === "group" && threadAdminId ? (
-                          <span className={`admin-badge ${isThreadAdminMe ? "self" : ""}`}>{isThreadAdminMe ? "Admin" : "Managed"}</span>
-                        ) : null}
-                      </strong>
-                      <span>{thread.subtitle}</span>
+                </>
+              ) : (
+                <div className="files-panel">
+                  <div className="files-panel-head">
+                    <p className="sidebar-section-title">Central File Vault</p>
+                    <button type="button" className="theme-btn files-config-btn" onClick={() => setShowFilesConfig((prev) => !prev)}>
+                      {showFilesConfig ? "Hide Config" : "Config"}
                     </button>
-                    );
-                  })}
-                </div>
+                  </div>
 
-                <p className="sidebar-section-title">Contacts</p>
-                {visibleUsers.length === 0 ? <p className="muted">No active contacts</p> : null}
-                {visibleUsers.map((user) => (
-                  <article
-                    key={user.clientId}
-                    className={`partner-card ${selectedPartnerIds.includes(user.clientId) ? "selected" : ""}`}
-                    onClick={() => {
-                      if (chatAudience === "public") {
-                        setChatAudience("private");
-                        setSelectedPartnerIds([user.clientId]);
-                        return;
-                      }
-                      if (chatAudience === "private") {
-                        setSelectedPartnerIds([user.clientId]);
-                        return;
-                      }
-                      setSelectedPartnerIds((prev) =>
-                        prev.includes(user.clientId) ? prev.filter((id) => id !== user.clientId) : [...prev, user.clientId]
-                      );
-                    }}
-                  >
-                    <div className="partner-row">
-                      <strong>{user.nickname}</strong>
-                      <span className="online-dot" aria-hidden="true" />
-                    </div>
-                    <span>ID {user.clientId.slice(0, 8)}...</span>
-                  </article>
-                ))}
-              </div>
+                  {showFilesConfig ? (
+                    <section className="files-config" aria-label="Files configuration">
+                      <label>
+                        Scope
+                        <select
+                          value={filesConfig.scope}
+                          onChange={(event) => setFilesConfig((prev) => ({ ...prev, scope: event.target.value as FileLibraryConfig["scope"] }))}
+                        >
+                          <option value="all">All chats</option>
+                          <option value="current">Current chat only</option>
+                        </select>
+                      </label>
+                      <label>
+                        Sort
+                        <select
+                          value={filesConfig.sortBy}
+                          onChange={(event) => setFilesConfig((prev) => ({ ...prev, sortBy: event.target.value as FileLibraryConfig["sortBy"] }))}
+                        >
+                          <option value="newest">Newest first</option>
+                          <option value="oldest">Oldest first</option>
+                          <option value="size-desc">Largest first</option>
+                          <option value="size-asc">Smallest first</option>
+                        </select>
+                      </label>
+                      <label>
+                        Max entries
+                        <input
+                          type="number"
+                          min={10}
+                          max={500}
+                          value={filesConfig.limit}
+                          onChange={(event) =>
+                            setFilesConfig((prev) => ({
+                              ...prev,
+                              limit: Math.min(500, Math.max(10, Number(event.target.value) || 10))
+                            }))
+                          }
+                        />
+                      </label>
+                      <div className="files-config-grid">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={filesConfig.includeSent}
+                            onChange={(event) => setFilesConfig((prev) => ({ ...prev, includeSent: event.target.checked }))}
+                          />
+                          Sent
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={filesConfig.includeReceived}
+                            onChange={(event) => setFilesConfig((prev) => ({ ...prev, includeReceived: event.target.checked }))}
+                          />
+                          Received
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={filesConfig.includePublic}
+                            onChange={(event) => setFilesConfig((prev) => ({ ...prev, includePublic: event.target.checked }))}
+                          />
+                          Public
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={filesConfig.includePrivate}
+                            onChange={(event) => setFilesConfig((prev) => ({ ...prev, includePrivate: event.target.checked }))}
+                          />
+                          Private
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={filesConfig.includeGroup}
+                            onChange={(event) => setFilesConfig((prev) => ({ ...prev, includeGroup: event.target.checked }))}
+                          />
+                          Group
+                        </label>
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {sharedFiles.length === 0 ? <p className="muted">No files matched the current filters.</p> : null}
+                  <div className="files-list">
+                    {sharedFiles.map((item) => (
+                      <article key={item.messageId} className="files-item">
+                        <div className="files-item-meta">
+                          <strong>{item.file.name}</strong>
+                          <span>{formatFileSize(item.file.size)}</span>
+                          <span>{item.audience}</span>
+                          <span>{item.direction}</span>
+                        </div>
+                        <p className="files-item-thread">{item.threadTitle}</p>
+                        {item.caption ? <p className="files-item-caption">{item.caption}</p> : null}
+                        <div className="files-item-actions">
+                          <button
+                            type="button"
+                            className="theme-btn"
+                            onClick={() =>
+                              downloadFile({
+                                kind: "file",
+                                file: item.file,
+                                caption: item.caption
+                              })
+                            }
+                          >
+                            Download
+                          </button>
+                          <button type="button" className="theme-btn" onClick={() => openFileThread(item)}>
+                            Open Chat
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           ) : null}
         </aside>
@@ -1355,7 +1654,7 @@ export default function App() {
             </div>
           </header>
 
-          {isMobileLayout ? <p className="muted mobile-note">Contact list is available via the Show Contacts button.</p> : null}
+          {isMobileLayout ? <p className="muted mobile-note">Contacts and shared files are available via the sidebar button.</p> : null}
 
           <section className="chat-feed">
             <div className="audience-bar">
