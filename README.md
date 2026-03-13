@@ -37,6 +37,10 @@ The current implementation provides:
 │   └── .env.example
 ├── docs/
 │   └── architecture.md
+├── screenshots/
+│   ├── login.png
+│   ├── chat.png
+│   └── group_dark_theme.png
 ├── docker-compose.yml
 └── Makefile
 ```
@@ -92,6 +96,20 @@ make frontend
 - Choose your username and link node once backend is reachable.
 - Your personal Chat ID is shown after link.
 - Search chat partners by username or Chat ID via the partner finder.
+
+## Screenshots
+
+### Login
+
+![Login](screenshots/login.png)
+
+### Chat
+
+![Chat](screenshots/chat.png)
+
+### Group Chat (Dark Theme)
+
+![Group Chat Dark Theme](screenshots/group_dark_theme.png)
 
 ## API Endpoints
 
