@@ -14,21 +14,32 @@ import (
 )
 
 type ChatService struct {
-	store   *store.SQLiteStore
-	roomKey []byte
-	mu      sync.Mutex
-	broker  *Broker
-	users   map[string]model.ChatUser
+	store             *store.SQLiteStore
+	roomKey           []byte
+	mu                sync.Mutex
+	broker            *Broker
+	users             map[string]model.ChatUser
+	maxCiphertextSize int
+	maxRecipients     int
 }
 
 const activeUserTTL = 45 * time.Second
 const broadcastAdminKey = "broadcast:global"
 
-func NewChatService(store *store.SQLiteStore) *ChatService {
+func NewChatService(store *store.SQLiteStore, maxCiphertextSize int, maxRecipients int) *ChatService {
+	if maxCiphertextSize <= 0 {
+		maxCiphertextSize = 14 * 1024 * 1024
+	}
+	if maxRecipients <= 0 {
+		maxRecipients = 64
+	}
+
 	return &ChatService{
-		store:  store,
-		broker: NewBroker(),
-		users:  make(map[string]model.ChatUser),
+		store:             store,
+		broker:            NewBroker(),
+		users:             make(map[string]model.ChatUser),
+		maxCiphertextSize: maxCiphertextSize,
+		maxRecipients:     maxRecipients,
 	}
 }
 
@@ -87,6 +98,21 @@ func (s *ChatService) PostMessage(req model.PostMessageRequest) (model.Encrypted
 	if senderClientID == "" {
 		return model.EncryptedMessage{}, errors.New("senderClientId is required")
 	}
+	if strings.TrimSpace(req.Ciphertext) == "" {
+		return model.EncryptedMessage{}, errors.New("ciphertext is required")
+	}
+	if strings.TrimSpace(req.Nonce) == "" {
+		return model.EncryptedMessage{}, errors.New("nonce is required")
+	}
+	if len(req.Ciphertext) > s.maxCiphertextSize {
+		return model.EncryptedMessage{}, errors.New("ciphertext exceeds maximum allowed size")
+	}
+	if len(req.Nonce) > 1024 {
+		return model.EncryptedMessage{}, errors.New("nonce is too large")
+	}
+	if len(req.RecipientClientIDs) > s.maxRecipients {
+		return model.EncryptedMessage{}, errors.New("too many recipients")
+	}
 
 	s.mu.Lock()
 	senderUser, ok := s.users[senderClientID]
@@ -114,6 +140,7 @@ func (s *ChatService) PostMessage(req model.PostMessageRequest) (model.Encrypted
 
 	recipients := make([]string, 0, len(req.RecipientClientIDs))
 	seen := make(map[string]struct{}, len(req.RecipientClientIDs))
+	candidateIDs := make([]string, 0, len(req.RecipientClientIDs))
 	for _, recipient := range req.RecipientClientIDs {
 		id := strings.TrimSpace(recipient)
 		if id == "" {
@@ -126,16 +153,19 @@ func (s *ChatService) PostMessage(req model.PostMessageRequest) (model.Encrypted
 			continue
 		}
 
-		s.mu.Lock()
-		_, recipientExists := s.users[id]
-		s.mu.Unlock()
-		if !recipientExists {
+		seen[id] = struct{}{}
+		candidateIDs = append(candidateIDs, id)
+	}
+
+	s.mu.Lock()
+	for _, id := range candidateIDs {
+		if _, recipientExists := s.users[id]; !recipientExists {
+			s.mu.Unlock()
 			return model.EncryptedMessage{}, errors.New("recipient session not found")
 		}
-
-		seen[id] = struct{}{}
 		recipients = append(recipients, id)
 	}
+	s.mu.Unlock()
 	if chatType == "private" && len(recipients) != 1 {
 		return model.EncryptedMessage{}, errors.New("private chat requires exactly one recipientClientId")
 	}

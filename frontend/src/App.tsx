@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   checkBackendHealth,
   clearBroadcastChat,
@@ -28,9 +28,40 @@ interface DecryptedMessage {
   chatType: "public" | "private" | "group";
   groupKey: string;
   recipientClientIds: string[];
-  plaintext: string;
+  content: MessageContent;
+  preview: string;
   createdAt: string;
 }
+
+interface FilePayload {
+  v: 1;
+  t: "file";
+  name: string;
+  mimeType: string;
+  size: number;
+  data: string;
+  checksum: string;
+  caption?: string;
+}
+
+interface PendingFile {
+  name: string;
+  mimeType: string;
+  size: number;
+  data: string;
+  checksum: string;
+}
+
+type MessageContent =
+  | {
+      kind: "text";
+      text: string;
+    }
+  | {
+      kind: "file";
+      file: PendingFile;
+      caption: string;
+    };
 
 interface ConversationThread {
   key: string;
@@ -53,6 +84,122 @@ const sidebarPlugins = [
 ];
 
 const SESSION_CLIENT_ID_KEY = "nchat.clientId";
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
+function formatFileSize(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+async function buildPendingFile(file: File): Promise<PendingFile> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let checksum = "";
+
+  if (typeof crypto !== "undefined" && typeof crypto.subtle !== "undefined") {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    checksum = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  return {
+    name: file.name,
+    mimeType: file.type || "application/octet-stream",
+    size: file.size,
+    data: bytesToBase64(bytes),
+    checksum
+  };
+}
+
+function encodeFilePayload(file: PendingFile, caption: string): string {
+  const payload: FilePayload = {
+    v: 1,
+    t: "file",
+    name: file.name,
+    mimeType: file.mimeType,
+    size: file.size,
+    data: file.data,
+    checksum: file.checksum,
+    caption: caption || undefined
+  };
+  return JSON.stringify(payload);
+}
+
+function decodeMessageContent(rawPlaintext: string): MessageContent {
+  const plaintext = rawPlaintext ?? "";
+  try {
+    const parsed = JSON.parse(plaintext) as Partial<FilePayload>;
+    if (
+      parsed &&
+      parsed.t === "file" &&
+      parsed.v === 1 &&
+      typeof parsed.name === "string" &&
+      typeof parsed.mimeType === "string" &&
+      typeof parsed.size === "number" &&
+      typeof parsed.data === "string"
+    ) {
+      return {
+        kind: "file",
+        file: {
+          name: parsed.name,
+          mimeType: parsed.mimeType,
+          size: parsed.size,
+          data: parsed.data,
+          checksum: typeof parsed.checksum === "string" ? parsed.checksum : ""
+        },
+        caption: typeof parsed.caption === "string" ? parsed.caption : ""
+      };
+    }
+  } catch {
+    // Messages from old clients are plain text and should remain readable.
+  }
+
+  return {
+    kind: "text",
+    text: plaintext
+  };
+}
+
+function messagePreview(content: MessageContent): string {
+  if (content.kind === "text") {
+    return content.text.slice(0, 42) || "Message";
+  }
+  const base = `[File] ${content.file.name}`;
+  return content.caption ? `${base}: ${content.caption.slice(0, 20)}` : base;
+}
 
 function generateCallsign(): string {
   const words = ["ATLAS", "NEXUS", "ORION", "CIPHER", "DELTA", "VECTOR", "NOVA", "PIVOT"];
@@ -91,6 +238,7 @@ export default function App() {
   const [cryptoEngine, setCryptoEngine] = useState<CryptoEngine>("WebCrypto");
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
   const [users, setUsers] = useState<ChatUser[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(false);
@@ -107,6 +255,7 @@ export default function App() {
   const [storedClientId, setStoredClientId] = useState<string>(() => localStorage.getItem(SESSION_CLIENT_ID_KEY) ?? "");
 
   const socketRef = useRef<WebSocket | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const autoConnectAttemptedRef = useRef(false);
 
   useEffect(() => {
@@ -312,7 +461,9 @@ export default function App() {
   }, [users]);
 
   const canSend = useMemo(() => {
-    if (!isConnected || draft.trim().length === 0) {
+    const hasText = draft.trim().length > 0;
+    const hasFile = pendingFile !== null;
+    if (!isConnected || (!hasText && !hasFile)) {
       return false;
     }
     if (cryptoMode !== "insecure" && roomKey === null) {
@@ -325,7 +476,7 @@ export default function App() {
       return selectedPartnerIds.length > 0;
     }
     return true;
-  }, [isConnected, draft, cryptoMode, roomKey, chatAudience, selectedPartnerIds]);
+  }, [isConnected, draft, pendingFile, cryptoMode, roomKey, chatAudience, selectedPartnerIds]);
 
   const filteredMessages = useMemo(() => {
     if (chatAudience === "public") {
@@ -460,7 +611,7 @@ export default function App() {
           audience: "public",
           partnerIds: [],
           title: "Broadcast",
-          subtitle: msg.plaintext.slice(0, 42) || "Public updates",
+          subtitle: msg.preview || "Public updates",
           lastAt: msg.createdAt
         });
         continue;
@@ -483,7 +634,7 @@ export default function App() {
           audience: "private",
           partnerIds: [partner],
           title: user?.nickname ?? `Private ${partner.slice(0, 8)}`,
-          subtitle: msg.plaintext.slice(0, 42) || "Private messages",
+          subtitle: msg.preview || "Private messages",
           lastAt: msg.createdAt
         });
         continue;
@@ -510,7 +661,7 @@ export default function App() {
         audience: "group",
         partnerIds,
         title: `Group: ${names.join(", ")}`,
-        subtitle: msg.plaintext.slice(0, 42) || "Group conversation",
+        subtitle: msg.preview || "Group conversation",
         lastAt: msg.createdAt
       });
     }
@@ -546,6 +697,7 @@ export default function App() {
   async function decryptAndAddMessage(message: EncryptedMessage, key: RoomKey | null) {
     try {
       const plaintext = await decryptMessage(message.ciphertext, message.nonce, key);
+      const content = decodeMessageContent(plaintext);
       setMessages((prev) => {
         if (prev.some((item) => item.id === message.id)) {
           return prev;
@@ -559,7 +711,8 @@ export default function App() {
             chatType: message.chatType ?? "public",
             groupKey: message.groupKey ?? "",
             recipientClientIds: message.recipientClientIds ?? [],
-            plaintext,
+            content,
+            preview: messagePreview(content),
             createdAt: message.createdAt
           }
         ];
@@ -649,12 +802,14 @@ export default function App() {
 
   async function handleSend(event: FormEvent) {
     event.preventDefault();
-    if (!nickname.trim() || !draft.trim()) {
+    const trimmedDraft = draft.trim();
+    if (!nickname.trim() || (!trimmedDraft && !pendingFile)) {
       return;
     }
 
     try {
-      const payload = await encryptMessage(draft.trim(), roomKey);
+      const plaintext = pendingFile ? encodeFilePayload(pendingFile, trimmedDraft) : trimmedDraft;
+      const payload = await encryptMessage(plaintext, roomKey);
       await postEncryptedMessage(
         nickname.trim(),
         clientId,
@@ -664,10 +819,61 @@ export default function App() {
         selectedPartnerIds
       );
       setDraft("");
+      setPendingFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     } catch (sendError) {
       const message = sendError instanceof Error ? sendError.message : "Send failed";
       setError(message);
     }
+  }
+
+  async function processPickedFile(file: File) {
+    if (file.size <= 0) {
+      setError("Selected file is empty");
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setError(`File exceeds ${formatFileSize(MAX_FILE_BYTES)} limit`);
+      return;
+    }
+
+    try {
+      const nextPending = await buildPendingFile(file);
+      setPendingFile(nextPending);
+      setError(null);
+    } catch {
+      setError("Failed to process selected file");
+    }
+  }
+
+  async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    await processPickedFile(file);
+  }
+
+  function clearPendingFile() {
+    setPendingFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  function downloadFile(content: Extract<MessageContent, { kind: "file" }>) {
+    const bytes = base64ToBytes(content.file.data);
+    const blob = new Blob([toArrayBuffer(bytes)], { type: content.file.mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = content.file.name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
   }
 
   async function removePrivateMessages(partnerId: string) {
@@ -900,6 +1106,7 @@ export default function App() {
     setMessages([]);
     setUsers([]);
     setDraft("");
+    setPendingFile(null);
     setPartnerFilter("");
     setChatAudience("public");
     setSelectedPartnerIds([]);
@@ -1126,7 +1333,6 @@ export default function App() {
                   <span className="nchat-wordmark-accent">N</span>CHAT
                 </p>
               </div>
-              <h1>Corporate Secure Chat</h1>
               <p className="copy">{status}</p>
               {cryptoMode === "insecure" ? <p className="muted">Compatibility mode: messaging is available, end-to-end encryption is disabled on this device.</p> : null}
             </div>
@@ -1302,12 +1508,66 @@ export default function App() {
                   <strong>{msg.sender}</strong>
                   <time>{new Date(msg.createdAt).toLocaleTimeString()}</time>
                 </div>
-                <p>{msg.plaintext}</p>
+                {msg.content.kind === "text" ? <p>{msg.content.text}</p> : null}
+                {msg.content.kind === "file" ? (
+                  <div className="file-card">
+                    <div className="file-card-meta">
+                      <strong>{msg.content.file.name}</strong>
+                      <span>{formatFileSize(msg.content.file.size)}</span>
+                      <span>{msg.content.file.mimeType}</span>
+                    </div>
+                    {msg.content.caption ? <p className="file-caption">{msg.content.caption}</p> : null}
+                    <button
+                      type="button"
+                      className="theme-btn file-download-btn"
+                      onClick={() => {
+                        if (msg.content.kind === "file") {
+                          downloadFile(msg.content);
+                        }
+                      }}
+                    >
+                      Download File
+                    </button>
+                  </div>
+                ) : null}
               </article>
             ))}
           </section>
 
-          <form className="composer" onSubmit={handleSend}>
+          <form
+            className="composer"
+            onSubmit={handleSend}
+            onDragOver={(event) => {
+              event.preventDefault();
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              const file = event.dataTransfer.files?.[0];
+              if (file) {
+                void processPickedFile(file);
+              }
+            }}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="file-input"
+              onChange={(event) => void handleFileSelected(event)}
+              aria-label="Attach a file"
+            />
+            {pendingFile ? (
+              <div className="pending-file-row" role="status" aria-live="polite">
+                <div>
+                  <strong>{pendingFile.name}</strong>
+                  <span>{formatFileSize(pendingFile.size)}</span>
+                </div>
+                <button type="button" className="theme-btn" onClick={clearPendingFile}>
+                  Remove file
+                </button>
+              </div>
+            ) : (
+              <p className="muted file-drop-hint">Drop file here or use Attach</p>
+            )}
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
@@ -1322,9 +1582,14 @@ export default function App() {
               placeholder="Write message"
               rows={2}
             />
-            <button type="submit" disabled={!canSend}>
-              Send
-            </button>
+            <div className="composer-actions">
+              <button type="button" className="theme-btn" onClick={() => fileInputRef.current?.click()}>
+                Attach
+              </button>
+              <button type="submit" disabled={!canSend}>
+                {pendingFile ? "Send File" : "Send"}
+              </button>
+            </div>
           </form>
 
           {error ? <p className="error-text">{error}</p> : null}

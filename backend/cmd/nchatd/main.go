@@ -30,7 +30,7 @@ func main() {
 	}
 	defer db.Close()
 
-	chatService := service.NewChatService(db)
+	chatService := service.NewChatService(db, cfg.MaxCiphertextSize, cfg.MaxRecipients)
 	router := httpapi.NewRouter(cfg, chatService)
 	grpcSrv := grpc.NewServer()
 	chatv1.RegisterChatRelayServiceServer(grpcSrv, grpcapi.NewChatServer(chatService))

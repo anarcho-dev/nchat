@@ -11,6 +11,7 @@
 - Go backend with encrypted-message relay and persistence
 - React + TypeScript frontend with client-side crypto
 - RSA-4096 key exchange + AES-256-GCM payload encryption
+- Secure file sharing in `public`, `private` and `group` chats (E2E encrypted attachments)
 - Realtime stream over WebSocket
 - Active gRPC server with protobuf stubs (`backend/gen/chat/v1`)
 
@@ -121,6 +122,14 @@ make frontend
 - `POST /api/v1/messages`
 - `GET /api/v1/users?query=<nameOrId>&excludeClientId=<myId>`
 - `GET /ws`
+
+## Security Guardrails
+
+Backend-side limits can be tuned via environment variables:
+
+- `NCHAT_MAX_REQUEST_BODY_BYTES` (default `10485760`)
+- `NCHAT_MAX_CIPHERTEXT_CHARS` (default `14680064`)
+- `NCHAT_MAX_RECIPIENTS` (default `64`)
 
 ## gRPC Service
 

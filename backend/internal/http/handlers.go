@@ -2,6 +2,8 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -76,7 +78,19 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	var req model.PostMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, int64(h.cfg.MaxRequestBody))
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			respondError(w, http.StatusBadRequest, "empty JSON body")
+			return
+		}
+		respondError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
 		respondError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
