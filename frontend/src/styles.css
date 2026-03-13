@@ -3,7 +3,7 @@
 :root {
   --radius: 14px;
   --transition: 180ms ease;
-  --panel-compact: 84px;
+  --panel-compact: 76px;
 }
 
 :root[data-theme="dark"] {
@@ -243,17 +243,19 @@ button:disabled {
 }
 
 .sidebar {
-  padding: 1rem;
+  padding: 0.9rem;
   display: grid;
   grid-template-rows: auto auto 1fr;
-  gap: 0.8rem;
+  gap: 0.68rem;
   min-height: 0;
   transition: width var(--transition), padding var(--transition), opacity var(--transition), transform var(--transition);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 82%, var(--brand) 8%), var(--surface));
 }
 
 .sidebar.collapsed {
   width: var(--panel-compact);
-  padding: 1rem 0.55rem;
+  padding: 0.82rem 0.48rem;
 }
 
 .sidebar-head {
@@ -261,6 +263,8 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   gap: 0.6rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
 }
 
 .sidebar-title-row {
@@ -271,7 +275,8 @@ button:disabled {
 
 .sidebar-head h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.96rem;
+  letter-spacing: 0.01em;
 }
 
 .count-badge {
@@ -290,8 +295,8 @@ button:disabled {
 }
 
 .sidebar-toggle-btn {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border-radius: 12px;
   font-size: 1rem;
@@ -306,13 +311,15 @@ button:disabled {
 
 .sidebar-rail-btn {
   width: 100%;
-  padding: 0.65rem 0.4rem;
-  border-radius: 10px;
+  min-height: 42px;
+  padding: 0.58rem 0.42rem;
+  border-radius: 11px;
   border: 1px solid var(--border);
-  background: var(--surface-elev);
+  background: color-mix(in srgb, var(--surface-elev) 82%, var(--surface));
   color: var(--text-soft);
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
+  font-size: 0.73rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
@@ -324,7 +331,7 @@ button:disabled {
 
 .sidebar-plugin-strip {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.42rem;
 }
 
 .sidebar-plugin-strip.inline {
@@ -334,15 +341,15 @@ button:disabled {
 .plugin-rail-btn {
   width: 100%;
   min-height: 42px;
-  border-radius: 10px;
-  border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
-  background: color-mix(in srgb, var(--surface-elev) 88%, transparent);
+  border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-elev) 85%, transparent);
   color: var(--text-soft);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.4rem;
-  font-size: 0.76rem;
+  font-size: 0.75rem;
 }
 
 .plugin-rail-btn.active {
@@ -373,6 +380,18 @@ button:disabled {
 .plugin-rail-btn em {
   font-style: normal;
   font-size: 0.74rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
+.plugin-count {
+  font-size: 0.66rem;
+  line-height: 1;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.14rem 0.34rem;
 }
 
 .partner-search {
@@ -432,6 +451,7 @@ button:disabled {
   gap: 0.55rem;
   align-content: start;
   min-height: 0;
+  padding-top: 0.15rem;
 }
 
 .files-panel {
@@ -440,6 +460,7 @@ button:disabled {
   gap: 0.55rem;
   align-content: start;
   min-height: 0;
+  padding-top: 0.15rem;
 }
 
 .files-panel-head {
@@ -912,6 +933,12 @@ button:disabled {
   font-size: 0.85rem;
 }
 
+.file-locked {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.82rem;
+}
+
 .file-download-btn {
   justify-self: start;
 }
@@ -940,7 +967,13 @@ button:disabled {
   gap: 0.55rem;
 }
 
-.pending-file-row div {
+.pending-file-meta {
+  width: 100%;
+  display: grid;
+  gap: 0.32rem;
+}
+
+.pending-file-meta > div {
   display: grid;
   gap: 0.12rem;
 }
@@ -948,6 +981,49 @@ button:disabled {
 .pending-file-row span {
   color: var(--text-soft);
   font-size: 0.8rem;
+}
+
+.file-permissions {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 70%, var(--surface-elev));
+  padding: 0.45rem;
+  display: grid;
+  gap: 0.36rem;
+}
+
+.file-permissions label {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  display: grid;
+  gap: 0.18rem;
+}
+
+.file-permissions select {
+  width: 100%;
+  border-radius: 9px;
+  padding: 0.38rem 0.45rem;
+}
+
+.file-permission-users {
+  border-top: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  padding-top: 0.35rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.26rem;
+}
+
+.file-permission-users label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  color: var(--text);
+  font-size: 0.76rem;
+}
+
+.file-permission-note {
+  margin: 0;
+  font-size: 0.76rem;
 }
 
 .file-drop-hint {
@@ -1003,7 +1079,7 @@ button:disabled {
     left: 0;
     top: 0;
     height: 100dvh;
-    width: min(86vw, 360px);
+    width: min(88vw, 372px);
     border-radius: 0 18px 18px 0;
     z-index: 30;
     order: 1;
@@ -1143,6 +1219,15 @@ button:disabled {
     width: 100%;
   }
 
+  .pending-file-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .file-permission-users {
+    grid-template-columns: 1fr;
+  }
+
   .topbar-actions button {
     width: auto;
     min-width: 128px;
@@ -1162,7 +1247,12 @@ button:disabled {
 
   .sidebar.collapsed .sidebar-head {
     justify-content: center;
-    margin-bottom: 0.2rem;
+    margin-bottom: 0.12rem;
+    padding-bottom: 0.3rem;
+  }
+
+  .sidebar.collapsed .count-badge {
+    display: none;
   }
 
   .sidebar.collapsed .sidebar-toggle-btn {
@@ -1173,21 +1263,21 @@ button:disabled {
     width: 100%;
     justify-items: center;
     align-content: start;
-    gap: 0.5rem;
-    padding-top: 0.15rem;
+    gap: 0.42rem;
+    padding-top: 0.1rem;
   }
 
   .sidebar.collapsed .sidebar-plugin-strip.rail .sidebar-rail-btn,
   .sidebar.collapsed .sidebar-plugin-strip.rail .plugin-rail-btn {
-    width: 52px;
-    min-height: 36px;
-    padding: 0.38rem 0.22rem;
-    border-radius: 10px;
+    width: 48px;
+    min-height: 40px;
+    padding: 0.38rem 0.2rem;
+    border-radius: 11px;
   }
 
   .sidebar.collapsed .sidebar-plugin-strip.rail .sidebar-rail-btn {
     font-family: "IBM Plex Mono", monospace;
-    font-size: 0.68rem;
+    font-size: 0.66rem;
     letter-spacing: 0.06em;
   }
 
@@ -1195,7 +1285,9 @@ button:disabled {
     display: none;
   }
 
-  .sidebar.collapsed .sidebar-plugin-strip.rail .plugin-rail-btn {
-    border-style: solid;
+  .sidebar.collapsed .sidebar-plugin-strip.rail .plugin-rail-btn span {
+    width: 20px;
+    height: 20px;
+    font-size: 0.62rem;
   }
 }

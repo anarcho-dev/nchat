@@ -42,6 +42,8 @@ interface FilePayload {
   data: string;
   checksum: string;
   caption?: string;
+  accessMode?: FileAccessMode;
+  allowedClientIds?: string[];
 }
 
 interface PendingFile {
@@ -61,7 +63,11 @@ type MessageContent =
       kind: "file";
       file: PendingFile;
       caption: string;
+      accessMode: FileAccessMode;
+      allowedClientIds: string[];
     };
+
+type FileAccessMode = "broadcast" | "users" | "group";
 
 interface ConversationThread {
   key: string;
@@ -104,14 +110,13 @@ type CryptoEngine = "WebCrypto" | "Forge" | "Fallback";
 type SidebarSection = "contacts" | "files";
 
 const sidebarPlugins = [
-  { id: "files", label: "Files", short: "FI" },
-  { id: "tasks", label: "Tasks", short: "TA" },
-  { id: "tools", label: "Tools", short: "TL" }
+  { id: "files", label: "Files", short: "FI" }
 ];
 
 const SESSION_CLIENT_ID_KEY = "nchat.clientId";
 const FILES_CONFIG_KEY = "nchat.files.config";
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const FILE_ACCESS_DEFAULT: FileAccessMode = "broadcast";
 const defaultFileLibraryConfig: FileLibraryConfig = {
   scope: "all",
   includeSent: true,
@@ -181,7 +186,11 @@ async function buildPendingFile(file: File): Promise<PendingFile> {
   };
 }
 
-function encodeFilePayload(file: PendingFile, caption: string): string {
+function uniqueIds(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function encodeFilePayload(file: PendingFile, caption: string, accessMode: FileAccessMode, allowedClientIds: string[]): string {
   const payload: FilePayload = {
     v: 1,
     t: "file",
@@ -190,7 +199,9 @@ function encodeFilePayload(file: PendingFile, caption: string): string {
     size: file.size,
     data: file.data,
     checksum: file.checksum,
-    caption: caption || undefined
+    caption: caption || undefined,
+    accessMode,
+    allowedClientIds: uniqueIds(allowedClientIds)
   };
   return JSON.stringify(payload);
 }
@@ -217,7 +228,11 @@ function decodeMessageContent(rawPlaintext: string): MessageContent {
           data: parsed.data,
           checksum: typeof parsed.checksum === "string" ? parsed.checksum : ""
         },
-        caption: typeof parsed.caption === "string" ? parsed.caption : ""
+        caption: typeof parsed.caption === "string" ? parsed.caption : "",
+        accessMode: parsed.accessMode === "users" || parsed.accessMode === "group" ? parsed.accessMode : "broadcast",
+        allowedClientIds: Array.isArray(parsed.allowedClientIds)
+          ? parsed.allowedClientIds.filter((id): id is string => typeof id === "string")
+          : []
       };
     }
   } catch {
@@ -228,6 +243,27 @@ function decodeMessageContent(rawPlaintext: string): MessageContent {
     kind: "text",
     text: plaintext
   };
+}
+
+function canAccessFile(
+  content: Extract<MessageContent, { kind: "file" }>,
+  viewerClientId: string,
+  senderClientId: string,
+  recipientClientIds: string[]
+): boolean {
+  if (!viewerClientId) {
+    return false;
+  }
+  if (viewerClientId === senderClientId) {
+    return true;
+  }
+
+  if (content.accessMode === "broadcast") {
+    return true;
+  }
+
+  const members = content.allowedClientIds.length > 0 ? content.allowedClientIds : [senderClientId, ...recipientClientIds];
+  return members.includes(viewerClientId);
 }
 
 function messagePreview(content: MessageContent): string {
@@ -276,6 +312,8 @@ export default function App() {
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null);
+  const [fileAccessMode, setFileAccessMode] = useState<FileAccessMode>(FILE_ACCESS_DEFAULT);
+  const [fileAllowedClientIds, setFileAllowedClientIds] = useState<string[]>([]);
   const [users, setUsers] = useState<ChatUser[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeSidebarSection, setActiveSidebarSection] = useState<SidebarSection>("contacts");
@@ -515,6 +553,34 @@ export default function App() {
     return map;
   }, [users]);
 
+  const fileAccessCandidates = useMemo(() => {
+    const map = new Map<string, string>();
+    map.set(clientId, `${nickname} (you)`);
+    for (const user of contacts) {
+      map.set(user.clientId, user.nickname || user.clientId.slice(0, 8));
+    }
+    return [...map.entries()].map(([id, label]) => ({ id, label }));
+  }, [clientId, nickname, contacts]);
+
+  useEffect(() => {
+    if (!pendingFile) {
+      return;
+    }
+
+    if (chatAudience === "private") {
+      setFileAccessMode("users");
+      setFileAllowedClientIds(uniqueIds([clientId, ...selectedPartnerIds]));
+      return;
+    }
+    if (chatAudience === "group") {
+      setFileAccessMode("group");
+      setFileAllowedClientIds(uniqueIds([clientId, ...selectedPartnerIds]));
+      return;
+    }
+
+    setFileAccessMode(FILE_ACCESS_DEFAULT);
+  }, [pendingFile, chatAudience, clientId, selectedPartnerIds]);
+
   const canSend = useMemo(() => {
     const hasText = draft.trim().length > 0;
     const hasFile = pendingFile !== null;
@@ -530,8 +596,11 @@ export default function App() {
     if (chatAudience === "group") {
       return selectedPartnerIds.length > 0;
     }
+    if (pendingFile && fileAccessMode === "users" && fileAllowedClientIds.length === 0) {
+      return false;
+    }
     return true;
-  }, [isConnected, draft, pendingFile, cryptoMode, roomKey, chatAudience, selectedPartnerIds]);
+  }, [isConnected, draft, pendingFile, cryptoMode, roomKey, chatAudience, selectedPartnerIds, fileAccessMode, fileAllowedClientIds]);
 
   const filteredMessages = useMemo(() => {
     if (chatAudience === "public") {
@@ -746,6 +815,10 @@ export default function App() {
         continue;
       }
 
+      if (!canAccessFile(msg.content, clientId, msg.senderClientId, msg.recipientClientIds)) {
+        continue;
+      }
+
       const direction: "sent" | "received" = msg.senderClientId === clientId ? "sent" : "received";
       let partnerIds: string[] = [];
       let threadTitle = "Broadcast";
@@ -955,7 +1028,17 @@ export default function App() {
     }
 
     try {
-      const plaintext = pendingFile ? encodeFilePayload(pendingFile, trimmedDraft) : trimmedDraft;
+      let plaintext = trimmedDraft;
+      if (pendingFile) {
+        const impliedGroupMembers = uniqueIds([clientId, ...selectedPartnerIds]);
+        const aclUsers =
+          fileAccessMode === "users"
+            ? uniqueIds([clientId, ...fileAllowedClientIds])
+            : fileAccessMode === "group"
+              ? impliedGroupMembers
+              : [];
+        plaintext = encodeFilePayload(pendingFile, trimmedDraft, fileAccessMode, aclUsers);
+      }
       const payload = await encryptMessage(plaintext, roomKey);
       await postEncryptedMessage(
         nickname.trim(),
@@ -967,6 +1050,8 @@ export default function App() {
       );
       setDraft("");
       setPendingFile(null);
+      setFileAccessMode(FILE_ACCESS_DEFAULT);
+      setFileAllowedClientIds([]);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -1005,6 +1090,8 @@ export default function App() {
 
   function clearPendingFile() {
     setPendingFile(null);
+    setFileAccessMode(FILE_ACCESS_DEFAULT);
+    setFileAllowedClientIds([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -1263,6 +1350,8 @@ export default function App() {
     setUsers([]);
     setDraft("");
     setPendingFile(null);
+    setFileAccessMode(FILE_ACCESS_DEFAULT);
+    setFileAllowedClientIds([]);
     setPartnerFilter("");
     setActiveSidebarSection("contacts");
     setShowFilesConfig(false);
@@ -1385,7 +1474,12 @@ export default function App() {
                 }}
               >
                 <span>{plugin.short}</span>
-                {!sidebarCollapsed || isMobileLayout ? <em>{plugin.label}</em> : null}
+                {!sidebarCollapsed || isMobileLayout ? (
+                  <em>
+                    {plugin.label}
+                    {plugin.id === "files" ? <small className="plugin-count">{sharedFiles.length}</small> : null}
+                  </em>
+                ) : null}
               </button>
             ))}
           </div>
@@ -1604,7 +1698,9 @@ export default function App() {
                               downloadFile({
                                 kind: "file",
                                 file: item.file,
-                                caption: item.caption
+                                caption: item.caption,
+                                accessMode: "broadcast",
+                                allowedClientIds: []
                               })
                             }
                           >
@@ -1810,23 +1906,30 @@ export default function App() {
                 {msg.content.kind === "text" ? <p>{msg.content.text}</p> : null}
                 {msg.content.kind === "file" ? (
                   <div className="file-card">
-                    <div className="file-card-meta">
-                      <strong>{msg.content.file.name}</strong>
-                      <span>{formatFileSize(msg.content.file.size)}</span>
-                      <span>{msg.content.file.mimeType}</span>
-                    </div>
-                    {msg.content.caption ? <p className="file-caption">{msg.content.caption}</p> : null}
-                    <button
-                      type="button"
-                      className="theme-btn file-download-btn"
-                      onClick={() => {
-                        if (msg.content.kind === "file") {
-                          downloadFile(msg.content);
-                        }
-                      }}
-                    >
-                      Download File
-                    </button>
+                    {canAccessFile(msg.content, clientId, msg.senderClientId, msg.recipientClientIds) ? (
+                      <>
+                        <div className="file-card-meta">
+                          <strong>{msg.content.file.name}</strong>
+                          <span>{formatFileSize(msg.content.file.size)}</span>
+                          <span>{msg.content.file.mimeType}</span>
+                          <span>{msg.content.accessMode}</span>
+                        </div>
+                        {msg.content.caption ? <p className="file-caption">{msg.content.caption}</p> : null}
+                        <button
+                          type="button"
+                          className="theme-btn file-download-btn"
+                          onClick={() => {
+                            if (msg.content.kind === "file") {
+                              downloadFile(msg.content);
+                            }
+                          }}
+                        >
+                          Download File
+                        </button>
+                      </>
+                    ) : (
+                      <p className="file-locked">Restricted file: you do not have permission to access this attachment.</p>
+                    )}
                   </div>
                 ) : null}
               </article>
@@ -1856,9 +1959,50 @@ export default function App() {
             />
             {pendingFile ? (
               <div className="pending-file-row" role="status" aria-live="polite">
-                <div>
-                  <strong>{pendingFile.name}</strong>
-                  <span>{formatFileSize(pendingFile.size)}</span>
+                <div className="pending-file-meta">
+                  <div>
+                    <strong>{pendingFile.name}</strong>
+                    <span>{formatFileSize(pendingFile.size)}</span>
+                  </div>
+                  <div className="file-permissions">
+                    <label>
+                      File access
+                      <select
+                        value={fileAccessMode}
+                        onChange={(event) => setFileAccessMode(event.target.value as FileAccessMode)}
+                        disabled={chatAudience === "private" || chatAudience === "group"}
+                      >
+                        <option value="broadcast">Broadcast (all)</option>
+                        <option value="users">Specific users</option>
+                        <option value="group">Current group</option>
+                      </select>
+                    </label>
+                    {fileAccessMode === "users" ? (
+                      <div className="file-permission-users">
+                        {fileAccessCandidates.map((candidate) => (
+                          <label key={candidate.id}>
+                            <input
+                              type="checkbox"
+                              checked={candidate.id === clientId || fileAllowedClientIds.includes(candidate.id)}
+                              disabled={candidate.id === clientId}
+                              onChange={(event) => {
+                                setFileAllowedClientIds((prev) => {
+                                  if (event.target.checked) {
+                                    return uniqueIds([...prev, candidate.id]);
+                                  }
+                                  return prev.filter((id) => id !== candidate.id);
+                                });
+                              }}
+                            />
+                            {candidate.label}
+                          </label>
+                        ))}
+                      </div>
+                    ) : null}
+                    {fileAccessMode === "group" ? (
+                      <p className="muted file-permission-note">Group permissions use current members of this group chat.</p>
+                    ) : null}
+                  </div>
                 </div>
                 <button type="button" className="theme-btn" onClick={clearPendingFile}>
                   Remove file
